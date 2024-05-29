@@ -8,7 +8,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
 
 class MainHook : IXposedHookLoadPackage {
     override fun handleLoadPackage(lpparam: LoadPackageParam) {
-        if (lpparam.packageName == BuildConfig.APPLICATION_ID) {
+        if (lpparam.packageName != "android") {
             return
         }
 
