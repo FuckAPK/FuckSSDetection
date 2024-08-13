@@ -14,34 +14,48 @@ class MainHook : IXposedHookLoadPackage {
             return
         }
 
-        try {
-            val activityTaskManagerServiceClazz = XposedHelpers.findClass(
+        val activityTaskManagerServiceClazz = runCatching {
+            XposedHelpers.findClass(
                 "com.android.server.wm.ActivityTaskManagerService",
                 lpparam.classLoader
             )
-            XposedBridge.hookAllMethods(
+        }.onFailure {
+            XposedBridge.log(it)
+        }.getOrNull() ?: return
+
+        runCatching {
+            XposedHelpers.findAndHookMethod(
                 activityTaskManagerServiceClazz,
                 "registerScreenCaptureObserver",
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val activityRecordClazz = XposedHelpers.findClass(
-                            "com.android.server.wm.ActivityRecord",
-                            lpparam.classLoader
-                        )
-                        val ar = XposedHelpers.callStaticMethod(
-                            activityRecordClazz,
-                            "forTokenLocked",
-                            arrayOf(IBinder::class.java),
-                            param.args[0]
-                        )
-                        val arIntent = XposedHelpers.getObjectField(ar, "intent") as Intent
-                        XposedBridge.log("prevent screenshot detection register from ${arIntent.component?.flattenToString()}")
-                        param.result = null
-                    }
-                }
+                IBinder::class.java,
+                "android.app.IScreenCaptureObserver",
+                RegisterScreenCaptureObserverHook
             )
-        } catch (t: Throwable) {
-            XposedBridge.log(t)
+        }.onFailure {
+            XposedBridge.log(it)
+        }
+    }
+
+    object RegisterScreenCaptureObserverHook : XC_MethodHook() {
+        override fun beforeHookedMethod(param: MethodHookParam) {
+            param.result = null
+            runCatching {
+                val activityRecordClazz = XposedHelpers.findClass(
+                    "com.android.server.wm.ActivityRecord",
+                    param.thisObject.javaClass.classLoader
+                )
+                val ar = XposedHelpers.callStaticMethod(
+                    activityRecordClazz,
+                    "forTokenLocked",
+                    arrayOf(IBinder::class.java),
+                    param.args[0]
+                )
+                val arIntent = XposedHelpers.getObjectField(ar, "intent") as Intent
+                XposedBridge.log("Prevent screenshot detection register from ${arIntent.component?.flattenToString()}")
+            }.onFailure {
+                XposedBridge.log("Prevent screenshot detection register but failed to retrieve component info.")
+                XposedBridge.log(it)
+            }
         }
     }
 }
