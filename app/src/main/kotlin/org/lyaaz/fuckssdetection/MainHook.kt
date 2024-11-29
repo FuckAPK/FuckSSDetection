@@ -1,6 +1,8 @@
 package org.lyaaz.fuckssdetection
 
 import android.content.Intent
+import android.os.Binder
+import android.os.Build
 import android.os.IBinder
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.XC_MethodHook
@@ -14,18 +16,10 @@ class MainHook : IXposedHookLoadPackage {
             return
         }
 
-        val activityTaskManagerServiceClazz = runCatching {
-            XposedHelpers.findClass(
-                "com.android.server.wm.ActivityTaskManagerService",
-                lpparam.classLoader
-            )
-        }.onFailure {
-            XposedBridge.log(it)
-        }.getOrNull() ?: return
-
         runCatching {
             XposedHelpers.findAndHookMethod(
-                activityTaskManagerServiceClazz,
+                "com.android.server.wm.ActivityTaskManagerService",
+                lpparam.classLoader,
                 "registerScreenCaptureObserver",
                 IBinder::class.java,
                 "android.app.IScreenCaptureObserver",
@@ -33,6 +27,20 @@ class MainHook : IXposedHookLoadPackage {
             )
         }.onFailure {
             XposedBridge.log(it)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            runCatching {
+                XposedHelpers.findAndHookMethod(
+                    "com.android.server.wm.ScreenRecordingCallbackController",
+                    lpparam.classLoader,
+                    "register",
+                    "android.window.IScreenRecordingCallback",
+                    RegisterScreenRecordingHook
+                )
+            }.onFailure {
+                XposedBridge.log(it)
+            }
         }
     }
 
@@ -56,6 +64,13 @@ class MainHook : IXposedHookLoadPackage {
                 XposedBridge.log("Prevent screenshot detection register but failed to retrieve component info.")
                 XposedBridge.log(it)
             }
+        }
+    }
+
+    object RegisterScreenRecordingHook : XC_MethodHook() {
+        override fun beforeHookedMethod(param: MethodHookParam) {
+            XposedBridge.log("Prevent screen recording detection from uid: ${Binder.getCallingUid()}")
+            param.result = false
         }
     }
 }
