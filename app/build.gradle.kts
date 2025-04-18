@@ -1,4 +1,3 @@
-import java.io.ByteArrayOutputStream
 import java.util.Properties
 
 plugins {
@@ -7,13 +6,11 @@ plugins {
 }
 
 fun String.execute(currentWorkingDir: File = file("./")): String {
-    val byteOut = ByteArrayOutputStream()
-    project.exec {
+    return providers.exec {
+        isIgnoreExitValue = true
         workingDir = currentWorkingDir
         commandLine = split("\\s".toRegex())
-        standardOutput = byteOut
-    }
-    return byteOut.toString().trim()
+    }.standardOutput.asText.get().trim()
 }
 
 android {
