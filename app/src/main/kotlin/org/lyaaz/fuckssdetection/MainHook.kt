@@ -193,8 +193,8 @@ class MainHook : XposedModule() {
                                 }
                             }
                         }
-                    } catch (_: Exception) {
-                        // Ignore query exceptions
+                    } catch (e: Exception) {
+                        log(Log.DEBUG, TAG, "ContentObserver query failed", e)
                     }
 
                     if (!isScreenshot) {
