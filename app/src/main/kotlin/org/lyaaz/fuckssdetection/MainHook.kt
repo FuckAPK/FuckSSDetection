@@ -1,12 +1,11 @@
 package org.lyaaz.fuckssdetection
 
-import android.app.AndroidAppHelper
+import android.app.Application
 import android.content.Intent
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
-import androidx.annotation.RequiresApi
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.SystemServerStartingParam
@@ -22,7 +21,6 @@ class MainHook : XposedModule() {
         hookAndroidSystem(param.classLoader)
     }
 
-    @RequiresApi(Build.VERSION_CODES.Q)
     override fun onPackageLoaded(param: PackageLoadedParam) {
         hookAppProcesses(param)
     }
@@ -89,7 +87,6 @@ class MainHook : XposedModule() {
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.Q)
     private fun hookAppProcesses(param: PackageLoadedParam) {
         val classLoader = param.defaultClassLoader
 
@@ -169,7 +166,9 @@ class MainHook : XposedModule() {
                         return@intercept null
                     }
 
-                    val context = AndroidAppHelper.currentApplication()
+                    val context = Class.forName("android.app.ActivityThread")
+                        .getDeclaredMethod("currentApplication")
+                        .invoke(null) as? Application
                     if (context == null) {
                         chain.proceed()
                         return@intercept null
