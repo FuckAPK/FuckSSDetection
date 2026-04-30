@@ -20,5 +20,10 @@
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
 
--keep class org.lyaaz.fuckssdetection.MainHook
+-adaptresourcefilecontents META-INF/xposed/java_init.list
+-keep,allowobfuscation,allowoptimization public class * extends io.github.libxposed.api.XposedModule {
+    public <init>(...);
+    public void onPackageLoaded(...);
+    public void onSystemServerStarting(...);
+}
 -dontobfuscate

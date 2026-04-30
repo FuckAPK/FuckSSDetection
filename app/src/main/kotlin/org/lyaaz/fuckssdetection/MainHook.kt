@@ -1,191 +1,216 @@
 package org.lyaaz.fuckssdetection
 
-import android.app.AndroidAppHelper
+import android.app.Application
 import android.content.Intent
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
-import de.robv.android.xposed.IXposedHookLoadPackage
-import de.robv.android.xposed.XC_MethodHook
-import de.robv.android.xposed.XposedBridge
-import de.robv.android.xposed.XposedHelpers
-import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
+import android.util.Log
+import io.github.libxposed.api.XposedModule
+import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
+import io.github.libxposed.api.XposedModuleInterface.SystemServerStartingParam
 import java.io.File
-import kotlin.concurrent.thread
 
-class MainHook : IXposedHookLoadPackage {
-    override fun handleLoadPackage(lpparam: LoadPackageParam) {
-        if (lpparam.packageName == "android") {
-            hookAndroidSystem(lpparam)
-        }
-        
-        if (lpparam.packageName != "android") {
-            hookAppProcesses(lpparam)
-        }
+class MainHook : XposedModule() {
+
+    companion object {
+        private const val TAG = "FuckSSDetection"
     }
 
-    private fun hookAndroidSystem(lpparam: LoadPackageParam) {
+    override fun onSystemServerStarting(param: SystemServerStartingParam) {
+        hookAndroidSystem(param.classLoader)
+    }
+
+    override fun onPackageLoaded(param: PackageLoadedParam) {
+        hookAppProcesses(param)
+    }
+
+    private fun hookAndroidSystem(classLoader: ClassLoader) {
         runCatching {
-            XposedHelpers.findAndHookMethod(
+            val atmsClass = Class.forName(
                 "com.android.server.wm.ActivityTaskManagerService",
-                lpparam.classLoader,
+                false, classLoader
+            )
+            val observerClass = Class.forName(
+                "android.app.IScreenCaptureObserver",
+                false, classLoader
+            )
+            val method = atmsClass.getDeclaredMethod(
                 "registerScreenCaptureObserver",
                 IBinder::class.java,
-                "android.app.IScreenCaptureObserver",
-                RegisterScreenCaptureObserverHook
+                observerClass
             )
+            hook(method).intercept { chain ->
+                runCatching {
+                    val activityRecordClazz = Class.forName(
+                        "com.android.server.wm.ActivityRecord",
+                        false,
+                        chain.thisObject!!.javaClass.classLoader!!
+                    )
+                    val forTokenLockedMethod = activityRecordClazz
+                        .getDeclaredMethod("forTokenLocked", IBinder::class.java)
+                        .apply { isAccessible = true }
+                    val ar = forTokenLockedMethod.invoke(null, chain.args[0])
+                    val intentField = activityRecordClazz
+                        .getDeclaredField("intent")
+                        .apply { isAccessible = true }
+                    val arIntent = intentField.get(ar) as Intent
+                    log(Log.INFO, TAG, "Prevent screenshot detection register from ${arIntent.component?.flattenToString()}")
+                }.onFailure {
+                    log(Log.INFO, TAG, "Prevent screenshot detection register but failed to retrieve component info.")
+                    log(Log.ERROR, TAG, "error", it)
+                }
+                null
+            }
         }.onFailure {
-            XposedBridge.log(it)
+            log(Log.ERROR, TAG, "Failed to hook registerScreenCaptureObserver", it)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
             runCatching {
-                XposedHelpers.findAndHookMethod(
+                val srccClass = Class.forName(
                     "com.android.server.wm.ScreenRecordingCallbackController",
-                    lpparam.classLoader,
-                    "register",
-                    "android.window.IScreenRecordingCallback",
-                    RegisterScreenRecordingHook
+                    false, classLoader
                 )
+                val callbackClass = Class.forName(
+                    "android.window.IScreenRecordingCallback",
+                    false, classLoader
+                )
+                val method = srccClass.getDeclaredMethod("register", callbackClass)
+                hook(method).intercept { chain ->
+                    log(Log.INFO, TAG, "Prevent screen recording detection from uid: ${Binder.getCallingUid()}")
+                    false
+                }
             }.onFailure {
-                XposedBridge.log(it)
+                log(Log.ERROR, TAG, "Failed to hook ScreenRecordingCallbackController.register", it)
             }
         }
     }
 
-    private fun hookAppProcesses(lpparam: LoadPackageParam) {
+    private fun hookAppProcesses(param: PackageLoadedParam) {
+        val classLoader = param.defaultClassLoader
+
         // Hook FileObserver
         runCatching {
-            val fileObserverClass = XposedHelpers.findClass("android.os.FileObserver", lpparam.classLoader)
-            XposedBridge.hookAllConstructors(fileObserverClass, FileObserverConstructorHook)
+            val fileObserverClass = Class.forName("android.os.FileObserver", false, classLoader)
+            for (constructor in fileObserverClass.declaredConstructors) {
+                hook(constructor).intercept { chain ->
+                    if (chain.args.isNotEmpty()) {
+                        val arg = chain.args[0]
+                        val newArgs = chain.args.toTypedArray()
+                        when {
+                            arg is String && isScreenshotPath(arg) -> {
+                                newArgs[0] = "/dev/null"
+                                chain.proceed(newArgs)
+                                return@intercept null
+                            }
+                            arg is File && isScreenshotPath(arg.absolutePath) -> {
+                                newArgs[0] = File("/dev/null")
+                                chain.proceed(newArgs)
+                                return@intercept null
+                            }
+                            arg is List<*> -> {
+                                val newPaths = arg.map { item ->
+                                    if (item is File && isScreenshotPath(item.absolutePath)) {
+                                        File("/dev/null")
+                                    } else {
+                                        item
+                                    }
+                                }
+                                newArgs[0] = newPaths
+                                chain.proceed(newArgs)
+                                return@intercept null
+                            }
+                        }
+                    }
+                    chain.proceed()
+                    null
+                }
+            }
         }.onFailure {
-            XposedBridge.log("FuckSSDetection: Failed to hook FileObserver in ${lpparam.packageName}")
-            XposedBridge.log(it)
+            log(Log.ERROR, TAG, "Failed to hook FileObserver in ${param.packageName}", it)
         }
 
         // Hook ContentObserver
         runCatching {
-            val contentObserverClass = XposedHelpers.findClass("android.database.ContentObserver", lpparam.classLoader)
-            XposedBridge.hookAllMethods(contentObserverClass, "dispatchChange", ContentObserverDispatchChangeHook)
-        }.onFailure {
-            XposedBridge.log("FuckSSDetection: Failed to hook ContentObserver in ${lpparam.packageName}")
-            XposedBridge.log(it)
-        }
-    }
+            val contentObserverClass =
+                Class.forName("android.database.ContentObserver", false, classLoader)
+            for (method in contentObserverClass.declaredMethods.filter { it.name == "dispatchChange" }) {
+                hook(method).intercept { chain ->
+                    var isMedia = false
+                    var targetUri: android.net.Uri? = null
 
-    object RegisterScreenCaptureObserverHook : XC_MethodHook() {
-        override fun beforeHookedMethod(param: MethodHookParam) {
-            param.result = null
-            runCatching {
-                val activityRecordClazz = XposedHelpers.findClass(
-                    "com.android.server.wm.ActivityRecord",
-                    param.thisObject.javaClass.classLoader
-                )
-                val ar = XposedHelpers.callStaticMethod(
-                    activityRecordClazz,
-                    "forTokenLocked",
-                    arrayOf(IBinder::class.java),
-                    param.args[0]
-                )
-                val arIntent = XposedHelpers.getObjectField(ar, "intent") as Intent
-                XposedBridge.log("Prevent screenshot detection register from ${arIntent.component?.flattenToString()}")
-            }.onFailure {
-                XposedBridge.log("Prevent screenshot detection register but failed to retrieve component info.")
-                XposedBridge.log(it)
-            }
-        }
-    }
-
-    object RegisterScreenRecordingHook : XC_MethodHook() {
-        override fun beforeHookedMethod(param: MethodHookParam) {
-            XposedBridge.log("Prevent screen recording detection from uid: ${Binder.getCallingUid()}")
-            param.result = false
-        }
-    }
-
-    object FileObserverConstructorHook : XC_MethodHook() {
-        override fun beforeHookedMethod(param: MethodHookParam) {
-            if (param.args.isEmpty()) return
-            
-            val arg = param.args[0]
-            if (arg is String) {
-                if (isScreenshotPath(arg)) {
-                    param.args[0] = "/dev/null"
-                }
-            } else if (arg is File) {
-                if (isScreenshotPath(arg.absolutePath)) {
-                    param.args[0] = File("/dev/null")
-                }
-            } else if (arg is List<*>) {
-                val newPaths = mutableListOf<File>()
-                for (item in arg) {
-                    if (item is File) {
-                        if (isScreenshotPath(item.absolutePath)) {
-                            newPaths.add(File("/dev/null"))
-                        } else {
-                            newPaths.add(item)
-                        }
-                    }
-                }
-                param.args[0] = newPaths
-            }
-        }
-
-        private fun isScreenshotPath(path: String): Boolean {
-            val lowerPath = path.lowercase()
-            return lowerPath.contains("screenshot") || lowerPath.contains("screenrecord") || lowerPath.contains("screen_record")
-        }
-    }
-
-    object ContentObserverDispatchChangeHook : XC_MethodHook() {
-        override fun beforeHookedMethod(param: MethodHookParam) {
-            var isMedia = false
-            var targetUri: android.net.Uri? = null
-            
-            for (arg in param.args) {
-                if (arg is android.net.Uri) {
-                    if (arg.toString().lowercase().contains("media")) {
-                        isMedia = true
-                        targetUri = arg
-                        break
-                    }
-                } else if (arg is Collection<*>) {
-                    for (item in arg) {
-                        if (item is android.net.Uri && item.toString().lowercase().contains("media")) {
-                            isMedia = true
-                            targetUri = item
-                            break
-                        }
-                    }
-                }
-                if (isMedia) break
-            }
-
-            if (!isMedia || targetUri == null) return
-
-            val context = AndroidAppHelper.currentApplication() ?: return
-            
-            var isScreenshot = false
-            try {
-                context.contentResolver.query(targetUri, arrayOf("_data"), null, null, null)?.use { cursor ->
-                    if (cursor.moveToFirst()) {
-                        val path = cursor.getString(0)
-                        if (path != null) {
-                            val lowerPath = path.lowercase()
-                            if (lowerPath.contains("screenshot") || lowerPath.contains("screenrecord") || lowerPath.contains("screen_record")) {
-                                isScreenshot = true
+                    for (arg in chain.args) {
+                        if (arg is android.net.Uri) {
+                            if (arg.toString().lowercase().contains("media")) {
+                                isMedia = true
+                                targetUri = arg
+                                break
+                            }
+                        } else if (arg is Collection<*>) {
+                            for (item in arg) {
+                                if (item is android.net.Uri && item.toString().lowercase()
+                                        .contains("media")
+                                ) {
+                                    isMedia = true
+                                    targetUri = item
+                                    break
+                                }
                             }
                         }
+                        if (isMedia) break
                     }
-                }
-            } catch (e: Exception) {
-                // Ignore query exceptions
-            }
 
-            if (isScreenshot) {
-                // Cancel execution entirely to evade detection
-                param.result = null
+                    if (!isMedia || targetUri == null) {
+                        chain.proceed()
+                        return@intercept null
+                    }
+
+                    val context = Class.forName("android.app.ActivityThread")
+                        .getDeclaredMethod("currentApplication")
+                        .invoke(null) as? Application
+                    if (context == null) {
+                        chain.proceed()
+                        return@intercept null
+                    }
+
+                    var isScreenshot = false
+                    try {
+                        context.contentResolver.query(
+                            targetUri, arrayOf("_data"), null, null, null
+                        )?.use { cursor ->
+                            if (cursor.moveToFirst()) {
+                                val path = cursor.getString(0)
+                                if (path != null) {
+                                    val lowerPath = path.lowercase()
+                                    if (lowerPath.contains("screenshot") ||
+                                        lowerPath.contains("screenrecord") ||
+                                        lowerPath.contains("screen_record")
+                                    ) {
+                                        isScreenshot = true
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        log(Log.DEBUG, TAG, "ContentObserver query failed", e)
+                    }
+
+                    if (!isScreenshot) {
+                        chain.proceed()
+                    }
+                    null
+                }
             }
+        }.onFailure {
+            log(Log.ERROR, TAG, "Failed to hook ContentObserver in ${param.packageName}", it)
         }
+    }
+
+    private fun isScreenshotPath(path: String): Boolean {
+        val lowerPath = path.lowercase()
+        return lowerPath.contains("screenshot") ||
+                lowerPath.contains("screenrecord") ||
+                lowerPath.contains("screen_record")
     }
 }
