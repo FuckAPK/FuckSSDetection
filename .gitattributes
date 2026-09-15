@@ -1,0 +1,18 @@
+# Keep the repository text-only and consistent regardless of the contributor's OS.
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.jar binary
+*.jks binary
+*.keystore binary
+*.zip binary
+*.apk binary
+*.aab binary
+*.so binary

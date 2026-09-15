@@ -6,16 +6,15 @@ on:
       - main
     tags:
       - '*'
-  pull_request_target:
-    types:
-      - opened
-      - reopened
-      - synchronize
+  # NOT `pull_request_target`: that event runs in the context of the *base* branch, so
+  # `actions/checkout` builds `main` instead of the pull request and the green check
+  # proves nothing.
+  pull_request:
   workflow_dispatch:
 
 jobs:
   build:
-    uses: FuckAPK/workflows/.github/workflows/build.yml@main
+    uses: FuckAPK/workflows/.github/workflows/build.yml@v1
     permissions:
       contents: write
     secrets: inherit
