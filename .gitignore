@@ -35,3 +35,4 @@ local.properties
 *.db
 hs_err_pid*
 .DS_Store
+mise.toml

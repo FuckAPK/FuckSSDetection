@@ -40,20 +40,20 @@ class MainHook : XposedModule() {
                 IBinder::class.java,
                 observerClass
             )
+            val activityRecordClazz by lazy {
+                Class.forName("com.android.server.wm.ActivityRecord", false, classLoader)
+            }
+            val forTokenLockedMethod by lazy {
+                activityRecordClazz.getDeclaredMethod("forTokenLocked", IBinder::class.java)
+                    .apply { isAccessible = true }
+            }
+            val intentField by lazy {
+                activityRecordClazz.getDeclaredField("intent")
+                    .apply { isAccessible = true }
+            }
             hook(method).intercept { chain ->
                 runCatching {
-                    val activityRecordClazz = Class.forName(
-                        "com.android.server.wm.ActivityRecord",
-                        false,
-                        chain.thisObject!!.javaClass.classLoader!!
-                    )
-                    val forTokenLockedMethod = activityRecordClazz
-                        .getDeclaredMethod("forTokenLocked", IBinder::class.java)
-                        .apply { isAccessible = true }
                     val ar = forTokenLockedMethod.invoke(null, chain.args[0])
-                    val intentField = activityRecordClazz
-                        .getDeclaredField("intent")
-                        .apply { isAccessible = true }
                     val arIntent = intentField.get(ar) as Intent
                     log(Log.INFO, TAG, "Prevent screenshot detection register from ${arIntent.component?.flattenToString()}")
                 }.onFailure {
@@ -135,6 +135,10 @@ class MainHook : XposedModule() {
         runCatching {
             val contentObserverClass =
                 Class.forName("android.database.ContentObserver", false, classLoader)
+            val currentAppMethod by lazy {
+                Class.forName("android.app.ActivityThread")
+                    .getDeclaredMethod("currentApplication")
+            }
             for (method in contentObserverClass.declaredMethods.filter { it.name == "dispatchChange" }) {
                 hook(method).intercept { chain ->
                     var isMedia = false
@@ -166,9 +170,7 @@ class MainHook : XposedModule() {
                         return@intercept null
                     }
 
-                    val context = Class.forName("android.app.ActivityThread")
-                        .getDeclaredMethod("currentApplication")
-                        .invoke(null) as? Application
+                    val context = currentAppMethod.invoke(null) as? Application
                     if (context == null) {
                         chain.proceed()
                         return@intercept null
